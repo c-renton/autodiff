@@ -114,6 +114,92 @@ struct ScalarBinaryOpTraits<NumericType<TernaryExpr<Op, L, C, R>>, TernaryExpr<O
     typedef DualType<TernaryExpr<Op, L, C, R>> ReturnType;
 };
 
+//------------------------------------------------------------------------------
+// SUPPORT FOR Eigen::numext::sqrt (and similar) CALLED DIRECTLY ON UNEVALUATED
+// EXPRESSION TEMPLATES (UnaryExpr/BinaryExpr/TernaryExpr).
+//
+// Since Eigen 5, functions like Eigen::internal::makeHouseholder() call
+// `numext::sqrt(numext::abs2(c0) + tailSqNorm)` using a *qualified* call to
+// numext::sqrt (previously an unqualified call relying on ADL, which happened
+// to pick up autodiff's own lazy `sqrt(R&&)` overload). Because the call is
+// qualified, ADL no longer applies, so `Scalar` in `numext::sqrt<Scalar>` gets
+// deduced directly from the argument's raw (lazy, unevaluated) expression type,
+// e.g. BinaryExpr<AddOp, Dual, Dual&>, rather than the concrete Dual type.
+//
+// Eigen's numext::sqrt is defined as:
+//   template<typename Scalar>
+//   EIGEN_MATHFUNC_RETVAL(sqrt, Scalar) sqrt(const Scalar& x)
+//   { return EIGEN_MATHFUNC_IMPL(sqrt, Scalar)::run(x); }
+// where EIGEN_MATHFUNC_RETVAL(sqrt, Scalar) expands to
+// `typename Eigen::internal::sqrt_retval<Scalar>::type`, which defaults to
+// `Scalar` itself. For an expression type like BinaryExpr<AddOp, L, R>, that
+// return type is not just wrong but *impossible* to construct (sqrt of a sum
+// cannot be represented as an AddExpr), causing a hard compile error.
+//
+// The fix is to specialize both `sqrt_retval` and `sqrt_impl` for the
+// expression template types, so that the outer numext::sqrt() call returns
+// the concrete evaluated Dual type instead of trying to preserve the
+// (unrepresentable) expression type. `autodiff::detail::eval()` performs the
+// eager evaluation of the expression down to its concrete Dual value.
+//------------------------------------------------------------------------------
+namespace internal {
+
+template<typename Op, typename R>
+struct sqrt_retval<UnaryExpr<Op, R>>
+{
+    typedef DualType<UnaryExpr<Op, R>> type;
+};
+
+template<typename Op, typename R>
+struct sqrt_impl<UnaryExpr<Op, R>>
+{
+    using Expr   = UnaryExpr<Op, R>;
+    using Result = DualType<Expr>;
+    static EIGEN_ALWAYS_INLINE Result run(const Expr& x)
+    {
+        using autodiff::detail::sqrt;
+        return sqrt(autodiff::detail::eval(x));
+    }
+};
+
+template<typename Op, typename L, typename R>
+struct sqrt_retval<BinaryExpr<Op, L, R>>
+{
+    typedef DualType<BinaryExpr<Op, L, R>> type;
+};
+
+template<typename Op, typename L, typename R>
+struct sqrt_impl<BinaryExpr<Op, L, R>>
+{
+    using Expr   = BinaryExpr<Op, L, R>;
+    using Result = DualType<Expr>;
+    static EIGEN_ALWAYS_INLINE Result run(const Expr& x)
+    {
+        using autodiff::detail::sqrt;
+        return sqrt(autodiff::detail::eval(x));
+    }
+};
+
+template<typename Op, typename L, typename C, typename R>
+struct sqrt_retval<TernaryExpr<Op, L, C, R>>
+{
+    typedef DualType<TernaryExpr<Op, L, C, R>> type;
+};
+
+template<typename Op, typename L, typename C, typename R>
+struct sqrt_impl<TernaryExpr<Op, L, C, R>>
+{
+    using Expr   = TernaryExpr<Op, L, C, R>;
+    using Result = DualType<Expr>;
+    static EIGEN_ALWAYS_INLINE Result run(const Expr& x)
+    {
+        using autodiff::detail::sqrt;
+        return sqrt(autodiff::detail::eval(x));
+    }
+};
+
+} // namespace internal
+
 } // namespace Eigen
 
 namespace autodiff {

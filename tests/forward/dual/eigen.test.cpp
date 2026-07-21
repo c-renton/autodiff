@@ -31,6 +31,10 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+// Eigen includes
+#include <Eigen/Geometry>
+#include <Eigen/QR>
+
 // autodiff includes
 #include <autodiff/forward/dual.hpp>
 #include <autodiff/forward/dual/eigen.hpp>
@@ -514,6 +518,184 @@ TEST_CASE("testing autodiff::dual (with eigen)", "[forward][dual][eigen]")
                 for(auto j = 0; j < 3; ++j)
                     CHECK( H(i, j) == approx(((i == j) ? 1.0 : 0.0)) );
         }
+    }
+
+    SECTION("testing Eigen::HouseholderQR with autodiff::dual (regression test for numext::sqrt on lazy expression templates)")
+    {
+        // Eigen >= 5 changed Eigen::internal::makeHouseholder() to compute
+        //     beta = numext::sqrt(numext::abs2(c0) + tailSqNorm);
+        // using a *qualified* call to numext::sqrt (previously an unqualified
+        // call relying on ADL to find autodiff's own lazy sqrt() overload).
+        // Because dual arithmetic produces lazy expression templates
+        // (UnaryExpr/BinaryExpr/TernaryExpr) instead of eagerly evaluating to
+        // `dual`, the qualified call causes Eigen::internal::sqrt_impl<Scalar>
+        // to be instantiated with Scalar deduced as the raw, unevaluated
+        // expression type, which used to fail to compile (sqrt of a sum cannot
+        // be represented as that same sum expression). This is a regression
+        // test for the Eigen::internal::sqrt_retval/sqrt_impl specializations
+        // added above for UnaryExpr/BinaryExpr/TernaryExpr.
+        auto qrTopLeft = [](const VectorXdual& p) -> dual
+        {
+            MatrixXdual A(2, 2);
+            A << p[0], p[1],
+                 p[1], p[0] + 2.0;
+
+            Eigen::HouseholderQR<Eigen::Ref<MatrixXdual>> qr(A); // In-place QR decomposition; used to fail to compile
+            MatrixXdual R = A.template triangularView<Eigen::Upper>();
+            return R(0, 0);
+        };
+
+        auto qrTopLeftDouble = [](const VectorXd& p) -> double
+        {
+            MatrixXd A(2, 2);
+            A << p[0], p[1],
+                 p[1], p[0] + 2.0;
+
+            Eigen::HouseholderQR<MatrixXd> qr(A);
+            MatrixXd R = qr.matrixQR().template triangularView<Eigen::Upper>();
+            return R(0, 0);
+        };
+
+        VectorXdual p(2);
+        p << 4.0, 1.0;
+
+        dual F;
+        VectorXd g = gradient(qrTopLeft, wrt(p), at(p), F);
+
+        VectorXd pd(2);
+        pd << 4.0, 1.0;
+
+        CHECK( F == approx(qrTopLeftDouble(pd)) );
+
+        // For this symmetric 2x2 matrix, the Householder reflection reduces
+        // the first column [p0, p1] to a single value: since c0 = p0 >= 0,
+        // beta is negated, giving R(0,0) = -sqrt(p0^2 + p1^2) exactly (the
+        // signed column norm), with gradient d/dp = -p / sqrt(p0^2 + p1^2).
+        const double norm = std::sqrt(pd[0]*pd[0] + pd[1]*pd[1]);
+        CHECK( F == approx(-norm) );
+        CHECK( g[0] == Catch::Approx(-pd[0] / norm) );
+        CHECK( g[1] == Catch::Approx(-pd[1] / norm) );
+    }
+
+    SECTION("testing Eigen::Quaternion<dual>::slerp() (minimal regression test for numext::sqrt on lazy expression templates)")
+    {
+        // A more minimal reproduction of the same numext::sqrt regression
+        // demonstrated above via Eigen::HouseholderQR. QuaternionBase::slerp()
+        // computes
+        //     Scalar sinTheta = numext::sqrt(Scalar(1) - absD * absD);
+        // using a *qualified* call to numext::sqrt on an inline expression
+        // (absD * absD, then Scalar(1) - ...) rather than a stored variable.
+        // For dual operands this produces nested lazy UnaryExpr/BinaryExpr
+        // types rather than an eagerly-evaluated dual, so Scalar in
+        // numext::sqrt<Scalar> gets deduced as that raw expression type,
+        // which used to fail to compile without the sqrt_retval/sqrt_impl
+        // specializations added above. A single slerp() call is enough to
+        // trigger it -- no matrix decomposition required.
+        auto slerpW = [](const VectorXdual& p) -> dual
+        {
+            Eigen::Quaternion<dual> q1(dual(1.0), dual(0.0), dual(0.0), dual(0.0));
+            Eigen::Quaternion<dual> q2(p[0], p[1], dual(0.0), dual(0.0));
+            Eigen::Quaternion<dual> q3 = q1.slerp(dual(0.5), q2); // used to fail to compile
+            return q3.w();
+        };
+
+        auto slerpWDouble = [](const VectorXd& p) -> double
+        {
+            Eigen::Quaterniond q1(1.0, 0.0, 0.0, 0.0);
+            Eigen::Quaterniond q2(p[0], p[1], 0.0, 0.0);
+            Eigen::Quaterniond q3 = q1.slerp(0.5, q2);
+            return q3.w();
+        };
+
+        VectorXdual p(2);
+        p << 0.7071, 0.7071;
+
+        dual F;
+        VectorXd g = gradient(slerpW, wrt(p), at(p), F);
+
+        VectorXd pd(2);
+        pd << 0.7071, 0.7071;
+
+        const double fval = slerpWDouble(pd);
+        CHECK( F == approx(fval) );
+
+        // Since q1 is the identity quaternion, d = q1.dot(q2) = q1.w()*q2.w()
+        // = p0 depends only on p0 (q1's zero x/y/z coefficients annihilate the
+        // p1 term), so theta = acos(p0), scale0, and scale1 all depend only on
+        // p0. With t = 0.5, scale0 = scale1 = sin(theta/2)/sin(theta), and
+        // F = scale0 + scale1*p0 simplifies via the half-angle identities
+        // sin(theta/2)/sin(theta) = 1/(2*cos(theta/2)) and
+        // cos(theta/2) = sqrt((1+p0)/2) to the closed form:
+        //     F = sqrt((1+p0)/2) = cos(theta/2)
+        // (the well-known slerp-midpoint identity: halfway between the
+        // identity rotation and a rotation by theta is a rotation by
+        // theta/2). Hence dF/dp0 = 1/(4*F) and dF/dp1 = 0 (p1 never enters
+        // the computation for this q1).
+        CHECK( fval == Catch::Approx(std::sqrt((1.0 + pd[0]) / 2.0)) );
+        CHECK( g[0] == Catch::Approx(1.0 / (4.0 * fval)) );
+        CHECK( g[1] == Catch::Approx(0.0).margin(1.0e-12) );
+    }
+
+    SECTION("testing numext::sqrt directly on BinaryExpr<AddOp> (a + b)")
+    {
+        // Directly exercises the sqrt_retval/sqrt_impl specialisation for
+        // BinaryExpr added to eigen.hpp, independently of any particular Eigen
+        // algorithm's internals. Models the expression shape arising in
+        // Householder.h (numext::sqrt(numext::abs2(c0) + tailSqNorm)) and
+        // Quaternion.h (numext::sqrt(Scalar(1) - absD * absD)).
+        // Fails to compile without the sqrt_retval/sqrt_impl specialisations.
+        auto f = [](const VectorXdual& p) -> dual
+        {
+            return Eigen::numext::sqrt(p[0] + p[1]);
+        };
+        auto fref = [](const VectorXd& p) -> double
+        {
+            return std::sqrt(p[0] + p[1]);
+        };
+
+        VectorXdual p(2); p << 4.0, 5.0;
+        VectorXd pd(2);   pd << 4.0, 5.0;
+
+        dual F;
+        VectorXd g = gradient(f, wrt(p), at(p), F);
+
+        const double fval = fref(pd);
+        CHECK( F == approx(fval) );
+
+        // f(a,b) = sqrt(a+b); df/da = df/db = 1 / (2*sqrt(a+b))
+        const double dfd = 1.0 / (2.0 * fval);
+        CHECK( g[0] == Catch::Approx(dfd) );
+        CHECK( g[1] == Catch::Approx(dfd) );
+    }
+
+    SECTION("testing numext::sqrt directly on BinaryExpr<MulOp/InvOp> (a / b)")
+    {
+        // Directly exercises the sqrt_retval/sqrt_impl specialisation for
+        // BinaryExpr. Division a/b produces BinaryExpr<MulOp, dual&,
+        // UnaryExpr<InvOp, dual&>>, modelling the expression shape in
+        // ConjugateGradient.h (numext::sqrt(residualNorm2 / rhsNorm2)).
+        // Fails to compile without the sqrt_retval/sqrt_impl specialisations.
+        auto f = [](const VectorXdual& p) -> dual
+        {
+            return Eigen::numext::sqrt(p[0] / p[1]);
+        };
+        auto fref = [](const VectorXd& p) -> double
+        {
+            return std::sqrt(p[0] / p[1]);
+        };
+
+        VectorXdual p(2); p << 9.0, 1.0;
+        VectorXd pd(2);   pd << 9.0, 1.0;
+
+        dual F;
+        VectorXd g = gradient(f, wrt(p), at(p), F);
+
+        const double fval = fref(pd);
+        CHECK( F == approx(fval) );
+
+        // f(a,b) = sqrt(a/b); df/da = 1/(2*b*sqrt(a/b)); df/db = -a/(2*b^2*sqrt(a/b))
+        CHECK( g[0] == Catch::Approx(1.0 / (2.0 * pd[1] * fval)) );
+        CHECK( g[1] == Catch::Approx(-pd[0] / (2.0 * pd[1] * pd[1] * fval)) );
     }
 
     SECTION("using Eigen::Map")
