@@ -198,6 +198,83 @@ struct sqrt_impl<TernaryExpr<Op, L, C, R>>
     }
 };
 
+//------------------------------------------------------------------------------
+// SUPPORT FOR Eigen::numext::abs2 CALLED DIRECTLY ON UNEVALUATED
+// EXPRESSION TEMPLATES (UnaryExpr/BinaryExpr/TernaryExpr).
+//
+// Eigen's stable_norm_kernel() in Core/StableNorm.h contains:
+//     ssq = ssq * numext::abs2(scale / maxCoeff);
+// using a *qualified* call to numext::abs2. Because (scale / maxCoeff)
+// for dual operands produces a lazy BinaryExpr rather than an eagerly-
+// evaluated dual, abs2_impl<Scalar> is instantiated with Scalar deduced as
+// the raw expression type. The default abs2_impl_default::run() computes
+// x*x, which deepens the expression tree to a new BinaryExpr<MulOp,...>
+// that cannot convert back to the original expression type declared as the
+// RealScalar return type, causing a hard compile error.
+// This is the same class of bug as the numext::sqrt issue above, but in
+// abs2_impl / abs2_retval rather than sqrt_impl / sqrt_retval. It is
+// triggered by any code path that calls .stableNorm() on an Eigen vector
+// of autodiff::dual, including Eigen::BiCGSTAB and related iterative
+// solvers.
+// The fix follows the same pattern: specialize abs2_retval to return the
+// concrete evaluated DualType, and abs2_impl to eagerly evaluate the
+// expression before squaring.
+//------------------------------------------------------------------------------
+
+template<typename Op, typename R>
+struct abs2_retval<UnaryExpr<Op, R>>
+{
+    typedef DualType<UnaryExpr<Op, R>> type;
+};
+
+template<typename Op, typename R>
+struct abs2_impl<UnaryExpr<Op, R>>
+{
+    using Expr   = UnaryExpr<Op, R>;
+    using Result = DualType<Expr>;
+    static EIGEN_ALWAYS_INLINE Result run(const Expr& x)
+    {
+        const Result ex = autodiff::detail::eval(x);
+        return ex * ex;
+    }
+};
+
+template<typename Op, typename L, typename R>
+struct abs2_retval<BinaryExpr<Op, L, R>>
+{
+    typedef DualType<BinaryExpr<Op, L, R>> type;
+};
+
+template<typename Op, typename L, typename R>
+struct abs2_impl<BinaryExpr<Op, L, R>>
+{
+    using Expr   = BinaryExpr<Op, L, R>;
+    using Result = DualType<Expr>;
+    static EIGEN_ALWAYS_INLINE Result run(const Expr& x)
+    {
+        const Result ex = autodiff::detail::eval(x);
+        return ex * ex;
+    }
+};
+
+template<typename Op, typename L, typename C, typename R>
+struct abs2_retval<TernaryExpr<Op, L, C, R>>
+{
+    typedef DualType<TernaryExpr<Op, L, C, R>> type;
+};
+
+template<typename Op, typename L, typename C, typename R>
+struct abs2_impl<TernaryExpr<Op, L, C, R>>
+{
+    using Expr   = TernaryExpr<Op, L, C, R>;
+    using Result = DualType<Expr>;
+    static EIGEN_ALWAYS_INLINE Result run(const Expr& x)
+    {
+        const Result ex = autodiff::detail::eval(x);
+        return ex * ex;
+    }
+};
+
 } // namespace internal
 
 } // namespace Eigen

@@ -636,6 +636,52 @@ TEST_CASE("testing autodiff::dual (with eigen)", "[forward][dual][eigen]")
         CHECK( g[1] == Catch::Approx(0.0).margin(1.0e-12) );
     }
 
+    SECTION("testing VectorXdual::stableNorm() (regression test for numext::abs2 on lazy expression templates)")
+    {
+        // Eigen >= 5 (and also 3.4, at this call site) computes stableNorm() via
+        // Eigen::internal::stable_norm_kernel(), which contains:
+        //     ssq = ssq * numext::abs2(scale / maxCoeff);
+        // using a *qualified* call to numext::abs2. Because (scale / maxCoeff)
+        // for dual operands produces a lazy BinaryExpr<MulOp, dual&,
+        // UnaryExpr<InvOp, dual&>> rather than an eagerly-evaluated dual,
+        // abs2_impl<Scalar> is instantiated with Scalar deduced as that raw
+        // expression type. The default abs2_impl_default::run() computes x*x,
+        // which deepens the expression tree to BinaryExpr<MulOp, BinaryExpr<...>,
+        // BinaryExpr<...>> -- a type that cannot convert back to the original
+        // BinaryExpr<MulOp,...> declared as the RealScalar return type, causing
+        // a hard compile error.
+        // This is the same class of bug as the numext::sqrt / HouseholderQR issue
+        // above (qualified numext:: call bypasses ADL so the lazy expression type
+        // is deduced as Scalar directly), but in abs2_impl rather than sqrt_impl.
+        // Fix: add Eigen::internal::abs2_retval / abs2_impl specializations for
+        // UnaryExpr/BinaryExpr/TernaryExpr, analogous to the sqrt fix in eigen.hpp.
+        auto stableNormFn = [](const VectorXdual& x) -> dual
+        {
+            return x.stableNorm(); // triggers numext::abs2(scale / maxCoeff) in StableNorm.h
+        };
+
+        auto stableNormDouble = [](const VectorXd& x) -> double
+        {
+            return x.stableNorm();
+        };
+
+        VectorXdual x(3);
+        x << 3.0, 4.0, 0.0;
+
+        dual F;
+        VectorXd g = gradient(stableNormFn, wrt(x), at(x), F);
+
+        VectorXd xd(3);
+        xd << 3.0, 4.0, 0.0;
+
+        CHECK( F == approx(stableNormDouble(xd)) );
+
+        // The gradient of ||x|| is x / ||x||.
+        const double norm = stableNormDouble(xd);
+        for (auto i = 0; i < 3; ++i)
+            CHECK( g[i] == Catch::Approx(xd[i] / norm) );
+    }
+
     SECTION("testing numext::sqrt directly on BinaryExpr<AddOp> (a + b)")
     {
         // Directly exercises the sqrt_retval/sqrt_impl specialisation for
@@ -696,6 +742,61 @@ TEST_CASE("testing autodiff::dual (with eigen)", "[forward][dual][eigen]")
         // f(a,b) = sqrt(a/b); df/da = 1/(2*b*sqrt(a/b)); df/db = -a/(2*b^2*sqrt(a/b))
         CHECK( g[0] == Catch::Approx(1.0 / (2.0 * pd[1] * fval)) );
         CHECK( g[1] == Catch::Approx(-pd[0] / (2.0 * pd[1] * pd[1] * fval)) );
+    }
+
+    SECTION("testing numext::abs2 directly on BinaryExpr<MulOp/InvOp> (a / b)")
+    {
+        // Directly exercises the abs2_retval/abs2_impl specialisation for
+        // BinaryExpr, modelling the expression shape in StableNorm.h
+        // (numext::abs2(scale / maxCoeff)).
+        // Fails to compile without the abs2_retval/abs2_impl specialisations.
+        auto f = [](const VectorXdual& p) -> dual
+        {
+            return Eigen::numext::abs2(p[0] / p[1]);
+        };
+        auto fref = [](const VectorXd& p) -> double
+        {
+            return (p[0] / p[1]) * (p[0] / p[1]);
+        };
+
+        VectorXdual p(2); p << 6.0, 2.0;
+        VectorXd pd(2);   pd << 6.0, 2.0;
+
+        dual F;
+        VectorXd g = gradient(f, wrt(p), at(p), F);
+
+        CHECK( F == approx(fref(pd)) );
+
+        // f(a,b) = (a/b)^2; df/da = 2*a/b^2; df/db = -2*a^2/b^3
+        CHECK( g[0] == Catch::Approx(2.0 * pd[0] / (pd[1]*pd[1])) );
+        CHECK( g[1] == Catch::Approx(-2.0 * pd[0]*pd[0] / (pd[1]*pd[1]*pd[1])) );
+    }
+
+    SECTION("testing numext::abs2 directly on UnaryExpr<NegOp> (-a)")
+    {
+        // Directly exercises the abs2_retval/abs2_impl specialisation for
+        // UnaryExpr. Unary negation -p[0] produces UnaryExpr<NegOp, dual&>.
+        // abs2(-x) = x^2, so the value and gradient are identical to abs2(x).
+        // Fails to compile without the abs2_retval/abs2_impl specialisations.
+        auto f = [](const VectorXdual& p) -> dual
+        {
+            return Eigen::numext::abs2(-p[0]);
+        };
+        auto fref = [](const VectorXd& p) -> double
+        {
+            return p[0] * p[0];
+        };
+
+        VectorXdual p(1); p << 3.0;
+        VectorXd pd(1);   pd << 3.0;
+
+        dual F;
+        VectorXd g = gradient(f, wrt(p), at(p), F);
+
+        CHECK( F == approx(fref(pd)) );
+
+        // f(a) = a^2; df/da = 2*a
+        CHECK( g[0] == Catch::Approx(2.0 * pd[0]) );
     }
 
     SECTION("using Eigen::Map")
