@@ -31,6 +31,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+// Eigen includes
+#include <Eigen/QR>
+
 // autodiff includes
 #include <autodiff/forward/dual.hpp>
 #include <autodiff/forward/dual/eigen.hpp>
@@ -513,6 +516,65 @@ TEST_CASE("testing autodiff::dual (with eigen)", "[forward][dual][eigen]")
             for(auto i = 0; i < 3; ++i)
                 for(auto j = 0; j < 3; ++j)
                     CHECK( H(i, j) == approx(((i == j) ? 1.0 : 0.0)) );
+        }
+    }
+
+    SECTION("testing Eigen::HouseholderQR with autodiff::dual (regression test for numext::sqrt on lazy expression templates)")
+    {
+        // Eigen >= 5 changed Eigen::internal::makeHouseholder() to compute
+        //     beta = numext::sqrt(numext::abs2(c0) + tailSqNorm);
+        // using a *qualified* call to numext::sqrt (previously an unqualified
+        // call relying on ADL to find autodiff's own lazy sqrt() overload).
+        // Because dual arithmetic produces lazy expression templates
+        // (UnaryExpr/BinaryExpr/TernaryExpr) instead of eagerly evaluating to
+        // `dual`, the qualified call causes Eigen::internal::sqrt_impl<Scalar>
+        // to be instantiated with Scalar deduced as the raw, unevaluated
+        // expression type, which used to fail to compile (sqrt of a sum cannot
+        // be represented as that same sum expression). This is a regression
+        // test for the Eigen::internal::sqrt_retval/sqrt_impl specializations
+        // added above for UnaryExpr/BinaryExpr/TernaryExpr.
+        auto qrTopLeft = [](const VectorXdual& p) -> dual
+        {
+            MatrixXdual A(2, 2);
+            A << p[0], p[1],
+                 p[1], p[0] + 2.0;
+
+            Eigen::HouseholderQR<Eigen::Ref<MatrixXdual>> qr(A); // In-place QR decomposition; used to fail to compile
+            MatrixXdual R = A.template triangularView<Eigen::Upper>();
+            return R(0, 0);
+        };
+
+        auto qrTopLeftDouble = [](const VectorXd& p) -> double
+        {
+            MatrixXd A(2, 2);
+            A << p[0], p[1],
+                 p[1], p[0] + 2.0;
+
+            Eigen::HouseholderQR<MatrixXd> qr(A);
+            MatrixXd R = qr.matrixQR().template triangularView<Eigen::Upper>();
+            return R(0, 0);
+        };
+
+        VectorXdual p(2);
+        p << 4.0, 1.0;
+
+        dual F;
+        VectorXd g = gradient(qrTopLeft, wrt(p), at(p), F);
+
+        VectorXd pd(2);
+        pd << 4.0, 1.0;
+
+        CHECK( F == approx(qrTopLeftDouble(pd)) );
+
+        // Cross-check the autodiff-computed gradient against a central
+        // finite-difference approximation using plain double arithmetic.
+        const double h = 1.0e-6;
+        for (auto i = 0; i < 2; ++i)
+        {
+            VectorXd pp = pd; pp[i] += h;
+            VectorXd pm = pd; pm[i] -= h;
+            const double fd = (qrTopLeftDouble(pp) - qrTopLeftDouble(pm)) / (2 * h);
+            CHECK( g[i] == Catch::Approx(fd).epsilon(1.0e-5) );
         }
     }
 
