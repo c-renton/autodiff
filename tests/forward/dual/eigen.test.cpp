@@ -578,6 +578,57 @@ TEST_CASE("testing autodiff::dual (with eigen)", "[forward][dual][eigen]")
         }
     }
 
+    SECTION("testing VectorXdual::stableNorm() (regression test for numext::abs2 on lazy expression templates)")
+    {
+        // Eigen >= 5 (and also 3.4, at this call site) computes stableNorm() via
+        // Eigen::internal::stable_norm_kernel(), which contains:
+        //     ssq = ssq * numext::abs2(scale / maxCoeff);
+        // using a *qualified* call to numext::abs2. Because (scale / maxCoeff)
+        // for dual operands produces a lazy BinaryExpr<MulOp, dual&,
+        // UnaryExpr<InvOp, dual&>> rather than an eagerly-evaluated dual,
+        // abs2_impl<Scalar> is instantiated with Scalar deduced as that raw
+        // expression type. The default abs2_impl_default::run() computes x*x,
+        // which deepens the expression tree to BinaryExpr<MulOp, BinaryExpr<...>,
+        // BinaryExpr<...>> -- a type that cannot convert back to the original
+        // BinaryExpr<MulOp,...> declared as the RealScalar return type, causing
+        // a hard compile error.
+        // This is the same class of bug as the numext::sqrt / HouseholderQR issue
+        // above (qualified numext:: call bypasses ADL so the lazy expression type
+        // is deduced as Scalar directly), but in abs2_impl rather than sqrt_impl.
+        // Fix: add Eigen::internal::abs2_retval / abs2_impl specializations for
+        // UnaryExpr/BinaryExpr/TernaryExpr, analogous to the sqrt fix in eigen.hpp.
+        auto stableNormFn = [](const VectorXdual& x) -> dual
+        {
+            return x.stableNorm(); // triggers numext::abs2(scale / maxCoeff) in StableNorm.h
+        };
+
+        auto stableNormDouble = [](const VectorXd& x) -> double
+        {
+            return x.stableNorm();
+        };
+
+        VectorXdual x(3);
+        x << 3.0, 4.0, 0.0;
+
+        dual F;
+        VectorXd g = gradient(stableNormFn, wrt(x), at(x), F);
+
+        VectorXd xd(3);
+        xd << 3.0, 4.0, 0.0;
+
+        CHECK( F == approx(stableNormDouble(xd)) );
+
+        // The gradient of stableNorm is x / stableNorm(x).
+        const double h = 1.0e-6;
+        for (auto i = 0; i < 3; ++i)
+        {
+            VectorXd pp = xd; pp[i] += h;
+            VectorXd pm = xd; pm[i] -= h;
+            const double fd = (stableNormDouble(pp) - stableNormDouble(pm)) / (2 * h);
+            CHECK( g[i] == Catch::Approx(fd).epsilon(1.0e-5) );
+        }
+    }
+
     SECTION("using Eigen::Map")
     {
         SECTION("testing gradient derivatives")
