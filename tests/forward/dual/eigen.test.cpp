@@ -799,6 +799,46 @@ TEST_CASE("testing autodiff::dual (with eigen)", "[forward][dual][eigen]")
         CHECK( g[0] == Catch::Approx(2.0 * pd[0]) );
     }
 
+    SECTION("testing numext::pow directly on BinaryExpr<AddOp> (a + b)")
+    {
+        // numext::pow routes through internal::pow_impl whose result_type is
+        // derived from ScalarBinaryOpTraits -- already specialised in eigen.hpp
+        // for expression types -- so no additional fix was required for pow.
+        // This test guards against that existing mechanism being broken.
+        auto f = [](const VectorXdual& p) -> dual
+        {
+            return Eigen::numext::pow(p[0] + p[1], 2.0);
+        };
+        auto fref = [](const VectorXd& p) -> double
+        {
+            return std::pow(p[0] + p[1], 2.0);
+        };
+
+        VectorXdual p(2); p << 3.0, 2.0;
+        VectorXd pd(2);   pd << 3.0, 2.0;
+
+        dual F;
+        VectorXd g = gradient(f, wrt(p), at(p), F);
+
+        CHECK( F == approx(fref(pd)) );
+
+        // f(a,b) = (a+b)^2; df/da = df/db = 2*(a+b)
+        const double dfd = 2.0 * (pd[0] + pd[1]);
+        CHECK( g[0] == Catch::Approx(dfd) );
+        CHECK( g[1] == Catch::Approx(dfd) );
+    }
+
+    // NOTE: several other numext:: functions (log, exp, exp2, sin, cos, tan,
+    // asin, acos, atan, sinh, cosh, tanh, rsqrt, cbrt, round, rint, floor,
+    // ceil, trunc) suffer from the same root cause -- Eigen's outer function
+    // template has the form `T foo(const T& x) { return foo(x); }` with no
+    // _retval/_impl indirection, so the return type is hardcoded as the deduced
+    // argument type T and cannot be redirected via class-template partial
+    // specialisation. These are not currently triggered by any qualified
+    // numext:: call on inline dual expressions in Eigen's dense linear-algebra
+    // headers; if they ever are, the fix would require patching Eigen's own
+    // headers directly rather than adding specialisations in autodiff.
+
     SECTION("using Eigen::Map")
     {
         SECTION("testing gradient derivatives")
