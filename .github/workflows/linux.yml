@@ -10,6 +10,8 @@ on:
   schedule:
     - cron: "0 5 * * 1"  # runs at 05:00 UTC on Mondays
 
+  workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -27,18 +29,18 @@ jobs:
         config: ["Release"]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Timestamp  # Idea from https://tinyurl.com/47wz7vpv
         id: timestamp
         shell: cmake -P {0}
         run: |
           string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-          message("::set-output name=now::${current_date}")
+          file(APPEND "$ENV{GITHUB_OUTPUT}" "now=${current_date}\n")
 
       - name: Configuring Cache
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: $HOME/.ccache
           key: ${{ runner.os }}-ccache
