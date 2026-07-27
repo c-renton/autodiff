@@ -1,12 +1,17 @@
-def declare_variables(variables, macro):
+def define_env(env):
     """
     This is the hook for the functions
 
-    - variables: the dictionary that contains the variables
-    - macro: a decorator function, to declare a macro.
+    - env.variables: the dictionary that contains the variables
+    - env.macro: a decorator function, to declare a macro.
+
+    Note: mkdocs-macros-plugin >= 1.0 renamed the module hook from
+    declare_variables(variables, macro) to define_env(env), with the two
+    former positional arguments now available as env.variables and
+    env.macro respectively.
     """
 
-    @macro
+    @env.macro
     def inputcode(filename, language, startline=0, endline=None):
         filename = '../' + filename  # file path must be given relative to root directory
         f = open(filename, 'r')
@@ -19,6 +24,6 @@ def declare_variables(variables, macro):
         textblock = f'```{language}\n{text}\n```'
         return textblock
 
-    @macro
+    @env.macro
     def inputcpp(filename, startline=0, endline=None):
         return inputcode(filename, 'cpp', startline, endline)
