@@ -13,8 +13,13 @@ on:
 jobs:
   build:
 
-    # runs-on: windows-latest  # Getting "fatal error C1001: Internal compiler error." for some examples in windows with MSVC 2022
-    runs-on: windows-2019
+    # Previously pinned to windows-2019 to avoid a "fatal error C1001:
+    # Internal compiler error." with MSVC 2022 on windows-latest. GitHub has
+    # since removed the windows-2019 runner label entirely, so pin to the
+    # next-oldest available, well-established label (windows-2022) rather
+    # than windows-latest/windows-2025, in case the MSVC ICE has not been
+    # fully resolved. Revert to windows-latest if it's confirmed fixed.
+    runs-on: windows-2022
 
     env:
       configuration: Release
@@ -24,7 +29,7 @@ jobs:
       max-parallel: 4
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -42,7 +47,7 @@ jobs:
           conda-devenv
       - name: Cache
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: $HOME\clcache
           key: ${{ runner.os }}-clcache
