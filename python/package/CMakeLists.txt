@@ -10,9 +10,15 @@ add_custom_target(autodiff-setuptools ALL
     COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_CURRENT_BINARY_DIR}/autodiff/$<TARGET_FILE_NAME:autodiff4py>
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
-# Ensure the path where the python package is installed is not empty
+# Ensure the path where the python package is installed is not empty.
+# Deliberately kept as a forward-slash CMake-style path (not converted via
+# TO_NATIVE_PATH) since pip accepts forward slashes fine on Windows, and a
+# native (backslash) path here would be embedded verbatim into the
+# generated cmake_install.cmake below via install(CODE ...), which then
+# fails to re-parse with "Invalid character escape" errors when that
+# generated script is later run during the Install step.
 if(NOT DEFINED AUTODIFF_PYTHON_INSTALL_PREFIX)
-    file(TO_NATIVE_PATH ${CMAKE_INSTALL_PREFIX} AUTODIFF_PYTHON_INSTALL_PREFIX)
+    set(AUTODIFF_PYTHON_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
 endif()
 
 # Create an install target for the autodiff python package

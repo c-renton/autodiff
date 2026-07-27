@@ -38,8 +38,12 @@ if(DEFINED ENV{CONDA_PREFIX})
         endif()
 
         if(WIN32)
-            message(STATUS "CondaAware: Setting PYTHON_EXECUTABLE=$ENV{CONDA_PREFIX}\\python.exe")
-            set(PYTHON_EXECUTABLE "$ENV{CONDA_PREFIX}\\python.exe")
+            # Normalize to forward slashes for the same reason as
+            # CONDA_AWARE_PREFIX below: a raw backslash path here can later
+            # be embedded verbatim into generated build files and fail to
+            # re-parse with "Invalid character escape" errors.
+            file(TO_CMAKE_PATH "$ENV{CONDA_PREFIX}/python.exe" PYTHON_EXECUTABLE)
+            message(STATUS "CondaAware: Setting PYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}")
         endif()
 
         if(NOT DEFINED PYTHON_EXECUTABLE)
@@ -68,6 +72,13 @@ if(DEFINED ENV{CONDA_PREFIX})
 
     # Check if CONDA_AWARE_PREFIX has been successfully set
     if(DEFINED CONDA_AWARE_PREFIX)
+        # Normalize to forward-slash CMake-style paths (e.g. $ENV{CONDA_PREFIX}
+        # on Windows is a native backslash path). Without this, the raw
+        # backslash string gets embedded verbatim into CMAKE_INSTALL_PREFIX
+        # and, in turn, into the generated cmake_install.cmake, which fails
+        # to re-parse with "Invalid character escape" errors (e.g. '\M' in
+        # '...\Miniconda...') when the Install step later runs that script.
+        file(TO_CMAKE_PATH "${CONDA_AWARE_PREFIX}" CONDA_AWARE_PREFIX)
         message(STATUS "CondaAware: Set CONDA_AWARE_PREFIX=${CONDA_AWARE_PREFIX}")
     else()
         message(FATAL_ERROR "CondaAware: Could not determine a value for CONDA_AWARE_PREFIX. Expecting Unix or Windows systems.")
