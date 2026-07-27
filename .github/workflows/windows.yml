@@ -39,7 +39,7 @@ jobs:
           conda config --set always_yes yes --set changeps1 no
           conda config --add channels conda-forge
           conda install conda-devenv
-          conda devenv
+          conda-devenv
       - name: Cache
         id: cache
         uses: actions/cache@v3

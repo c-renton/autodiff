@@ -64,7 +64,7 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
           mamba install conda-devenv
-          conda devenv -e mamba
+          conda-devenv -e mamba
 
       - name: Building, Testing & Installing
         shell: bash -el {0}

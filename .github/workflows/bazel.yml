@@ -1,16 +1,11 @@
 name: bazel
 
-disabled: true
-
+# Disabled from automatic triggers (push/pull_request/schedule); run manually
+# via the Actions tab if needed. `disabled: true` is not valid GitHub Actions
+# syntax and was causing every push to this repo to fail workflow validation
+# with "Unexpected value 'disabled'".
 on:
-  push:
-    branches:
-      - main
-
-  pull_request:
-
-  schedule:
-    - cron: "0 5 * * 1"  # runs at 05:00 UTC on Mondays
+  workflow_dispatch:
 
 jobs:
   bazel:
@@ -40,7 +35,7 @@ jobs:
       run: |
         conda config --set always_yes yes --set changeps1 no
         conda install conda-devenv bazel
-        conda devenv
+        conda-devenv
         source activate autodiff
 
     - name: Build
